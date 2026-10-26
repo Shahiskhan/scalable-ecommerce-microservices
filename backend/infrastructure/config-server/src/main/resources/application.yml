@@ -1,0 +1,46 @@
+server:
+  port: 8888
+spring:
+  application:
+    name: config-server
+  profiles:
+    default: native
+  security:
+    user:
+      name: ${CONFIG_USERNAME}
+      password: ${CONFIG_PASSWORD}
+  cloud:
+    config:
+      server:
+        native:
+          search-locations: ${CONFIG_REPOSITORY:file:/config/}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+logging:
+  structured:
+    format:
+      console: logstash
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+  cloud:
+    config:
+      server:
+        git:
+          uri: ${CONFIG_GIT_URI}
+          default-label: ${CONFIG_GIT_LABEL:main}
+          clone-on-start: true
+          force-pull: true
+          timeout: 5
+
+

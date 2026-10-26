@@ -1,0 +1,13 @@
+# Payment service
+
+Standalone Java 25 / Maven application, built with `mvn verify`. It owns its private MySQL `payments`, `inbox` and `outbox` tables. It has no public payment API and consumes `InventoryReserved` from Kafka. It emits `PaymentAuthorized` or `PaymentFailed`; product/order consumers perform their own local transitions and compensation.
+
+This repository contains a **sandbox provider only**. Startup fails closed unless the `local` Spring profile is active and `PAYMENT_PROVIDER=sandbox` is explicitly set. `SANDBOX_PAYMENT_DECLINE=true` selects deterministic local declines. No money is charged and no card data is accepted. Sandbox provider IDs are deterministic from the order UUID, and the database has one payment per order so logically duplicated events with different event IDs cannot authorize twice. Expired reservations produce a failure before the provider is called.
+
+The supplied provider is pure local code, so its result and event can be committed in one database transaction. A real provider must use the order ID as its idempotency key and persist a durable payment attempt before bounded network IO. Add a separate reconciliation worker/provider status lookup to resolve success after a network timeout or process crash. A transport timeout is an unknown result, never proof of decline. Refunds, signed provider callbacks, settlements, disputes and reconciliation are required before handling real payments. Do not wire a real network API directly into the sandbox transaction.
+
+The outbox acknowledges Kafka before marking its SQL row published, so delivery is at least once. Inbox insertion, payment state and outgoing event commit atomically. Transient provider exceptions roll back the inbox and payment row so the event can retry. Bounded failures are sent to `commerce.saga.v1.payment-service.DLT`; quarantined events require reconciliation and must not silently trigger inventory release.
+
+Required environment: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `CONFIG_SERVER_URL`, `CONFIG_USERNAME`, `CONFIG_PASSWORD`, `EUREKA_URL`, `KAFKA_BOOTSTRAP_SERVERS`, `INTERNAL_HMAC_SECRET`, `SPRING_PROFILES_ACTIVE=local`, `PAYMENT_PROVIDER=sandbox`. Port 8084. Internal signed-header verification matches the gateway; production also requires mTLS and network isolation. Only health/probes are readable without signed identity.
+
+Tests cover repeated physical and logical events, an expired reservation that never reaches the provider, rollback/retry after an unknown result, and internal-header signatures. H2 unit tests do not establish real MySQL concurrency or Kafka failure behavior.

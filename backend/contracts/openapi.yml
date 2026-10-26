@@ -1,0 +1,198 @@
+openapi: 3.1.0
+info:
+  title: Commerce public API
+  version: 0.1.0
+  description: Initial authenticated USD checkout. Payment is sandbox-only. 202 means accepted for asynchronous processing.
+servers:
+  - url: http://localhost:8080
+security:
+  - FirebaseIdToken: []
+paths:
+  /api/users/me:
+    get:
+      operationId: getMyProfile
+      responses:
+        '200':
+          description: Customer profile
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Profile'}
+        '404': {description: Profile not created}
+    put:
+      operationId: putMyProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName]
+              properties:
+                displayName: {type: string, minLength: 1, maxLength: 100}
+                expectedVersion: {type: integer, minimum: 0, default: 0, description: Zero creates; otherwise must match current version}
+      responses:
+        '200':
+          description: Saved profile
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Profile'}
+        '409': {description: Profile already exists or expected version changed}
+  /api/products:
+    get:
+      operationId: listProducts
+      parameters:
+        - {in: query, name: after, schema: {$ref: '#/components/schemas/Sku'}, description: Last SKU from previous page; omit for first page}
+        - {in: query, name: size, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+      responses:
+        '200':
+          description: Product page
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Product'}}
+    post:
+      operationId: createProduct
+      description: Requires Firebase roles custom claim containing ADMIN
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sku, name, priceMinor, currency, stock]
+              properties:
+                sku: {$ref: '#/components/schemas/Sku'}
+                name: {type: string, minLength: 1, maxLength: 200}
+                priceMinor: {type: integer, minimum: 1, maximum: 1000000000000}
+                currency: {const: USD}
+                stock: {type: integer, minimum: 0, maximum: 1000000000}
+      responses:
+        '201':
+          description: Product created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Product'}
+        '403': {description: ADMIN required}
+        '409': {description: SKU already exists}
+  /api/products/{sku}:
+    get:
+      operationId: getProduct
+      parameters:
+        - {in: path, name: sku, required: true, schema: {$ref: '#/components/schemas/Sku'}}
+      responses:
+        '200':
+          description: Cached product display; checkout resolves authoritative MySQL price and stock
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Product'}
+        '404': {description: Unknown SKU}
+  /api/cart:
+    get:
+      operationId: getMyCart
+      responses:
+        '200':
+          description: Current user's cart; empty if not created or expired
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Cart'}
+    put:
+      operationId: replaceMyCart
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Cart'}
+      responses:
+        '200': {description: Saved cart for 30 days; whole-cart replacement}
+        '400': {description: Unknown or duplicate SKU, or invalid quantity}
+  /api/orders:
+    post:
+      operationId: placeOrder
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: {type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items: {type: array, minItems: 1, maxItems: 20, items: {$ref: '#/components/schemas/Item'}}
+      responses:
+        '202':
+          description: Order accepted or existing idempotent order returned
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Order'}
+        '409': {description: Same key used for a different basket}
+  /api/orders/{orderId}:
+    get:
+      operationId: getMyOrder
+      parameters:
+        - {in: path, name: orderId, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Current asynchronous order state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Order'}
+        '404': {description: Unknown order or order belongs to another customer}
+  /api/notifications:
+    get:
+      operationId: listMyNotifications
+      responses:
+        '200':
+          description: Up to50 most recent user-owned terminal order notifications
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string, format: uuid}
+                    orderId: {type: string, format: uuid}
+                    kind: {enum: [OrderConfirmed, OrderCancelled]}
+                    message: {type: string}
+                    createdAt: {type: string, format: date-time}
+components:
+  securitySchemes:
+    FirebaseIdToken: {type: http, scheme: bearer, bearerFormat: JWT}
+  schemas:
+    Sku: {type: string, pattern: '^[A-Z0-9_-]{1,64}$'}
+    Item:
+      type: object
+      required: [sku, quantity]
+      properties:
+        sku: {$ref: '#/components/schemas/Sku'}
+        quantity: {type: integer, minimum: 1, maximum: 1000}
+    Cart:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/Item'}}
+    Product:
+      type: object
+      properties:
+        sku: {$ref: '#/components/schemas/Sku'}
+        name: {type: string}
+        priceMinor: {type: integer}
+        currency: {const: USD}
+        availableStock: {type: integer}
+    Profile:
+      type: object
+      properties:
+        userId: {type: string}
+        displayName: {type: string}
+        version: {type: integer}
+    Order:
+      type: object
+      properties:
+        orderId: {type: string, format: uuid}
+        status: {enum: [PENDING, RESERVED, CONFIRMED, CANCELLED]}
+        totalMinor: {type: [integer, 'null']}
+        currency: {type: [string, 'null']}
+        items: {type: array, items: {$ref: '#/components/schemas/Item'}}

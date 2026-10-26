@@ -1,0 +1,86 @@
+server:
+  port: 8080
+  error:
+    include-message: never
+    include-stacktrace: never
+spring:
+  application:
+    name: api-gateway
+  main:
+    web-application-type: reactive
+  config:
+    import: ${CONFIG_IMPORT:configserver:${CONFIG_SERVER_URL:http://config-server:8888}}
+  cloud:
+    config:
+      username: ${CONFIG_USERNAME}
+      password: ${CONFIG_PASSWORD}
+      fail-fast: true
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              enabled: false
+          httpclient:
+            connect-timeout: 1000
+            response-timeout: 3s
+            pool:
+              max-connections: 500
+              acquire-timeout: 1000
+          default-filters:
+            - name: RequestSize
+              args:
+                maxSize: 1MB
+            - SecureHeaders
+          filter:
+            request-rate-limiter:
+              deny-empty-key: true
+            redis-rate-limiter:
+              include-headers: true
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD}
+      connect-timeout: 1s
+      timeout: 1s
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL}
+  instance:
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${HOSTNAME:localhost}:${server.port}
+security:
+  firebase:
+    project-id: ${FIREBASE_PROJECT_ID}
+  internal:
+    secret: ${INTERNAL_HMAC_SECRET}
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-size: 50
+        minimum-number-of-calls: 20
+        failure-rate-threshold: 50
+        permitted-number-of-calls-in-half-open-state: 5
+        wait-duration-in-open-state: 10s
+  timelimiter:
+    configs:
+      default:
+        timeout-duration: 5s
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+logging:
+  structured:
+    format:
+      console: logstash
+

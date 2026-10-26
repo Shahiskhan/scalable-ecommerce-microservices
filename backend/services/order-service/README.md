@@ -1,0 +1,15 @@
+# Order service
+
+Standalone Java 25 / Maven application. Build with `mvn verify`; it does not depend on any sibling project. The service owns `orders`, `order_items`, `inbox` and `outbox` in its own MySQL instance.
+
+`POST /api/orders` requires an authenticated gateway request and `Idempotency-Key` (1–128 characters: letters, digits, `.`, `_`, `:`, `-`). Body: `{"items":[{"sku":"SKU-1","quantity":2}]}`. Up to 20 distinct SKUs, quantities 1–1000; SKUs contain 1–64 uppercase letters, digits, `_` or `-`, matching the inventory contract. Prices are deliberately absent. The product service reserves inventory and calculates the authoritative USD amount in integer minor units. A successful POST returns 202 with `orderId` and asynchronous status. Reusing a key for a different canonical item set returns 409. `GET /api/orders/{id}` returns only an order owned by the signed user.
+
+Transitions: PENDING → RESERVED → CONFIRMED, or PENDING/RESERVED → CANCELLED following inventory rejection/payment failure. Terminal states do not regress. No customer cancellation endpoint is exposed, because cancellation after payment authorization requires a separate refund saga. The reservation/payment deadline is 15 minutes by default. There is no automatic destructive timeout after payment may have succeeded: quarantined or stuck workflows require reconciliation before compensation.
+
+Each domain mutation and outgoing event commits in one local SQL transaction. The outbox publisher acknowledges Kafka before marking a record published. A crash between those steps produces a duplicate; every consumer must use its transactional inbox. Outbox publication uses bounded Kafka waits and row locks with `SKIP LOCKED`. A poison event is quarantined in `commerce.saga.v1.order-service.DLT` after bounded retries; operators must reconcile/replay it. Quarantine is not a business cancellation.
+
+All API calls require the gateway's signed internal headers. The HMAC input is `method + "\n" + rawPath + "\n" + userId + "\n" + roles + "\n" + epochSeconds + "\n" + requestId`. The SHA-256 signature is unpadded Base64URL. Receivers reject duplicate headers and clock skew beyond 30 seconds. Keep the HMAC key in a secret manager, synchronize clocks, and require mTLS/network policy in production; HMAC headers alone do not encrypt traffic or prevent a captured request being replayed within the skew window. The durable order idempotency key protects repeated placement.
+
+Required environment: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `CONFIG_SERVER_URL`, `CONFIG_USERNAME`, `CONFIG_PASSWORD`, `EUREKA_URL`, `KAFKA_BOOTSTRAP_SERVERS`, `INTERNAL_HMAC_SECRET`. Port 8083. Only `/actuator/health` and its probes are publicly readable within the private network.
+
+Tests exercise canonical request retry, conflicting key reuse, ownership, authoritative pricing, duplicate events, terminal-state immutability, transactional inbox rollback, and signed-header rejection. H2 tests do not establish MySQL locking behavior or Kafka delivery guarantees; run integration and failure-injection tests against the actual infrastructure before deployment.

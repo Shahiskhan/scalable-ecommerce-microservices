@@ -1,0 +1,6 @@
+**/target
+.git
+.env
+.local
+.m2
+secrets

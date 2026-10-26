@@ -1,0 +1,320 @@
+name: commerce-local
+# Single-node development topology. See docs/operations.md for production requirements.
+x-app: &app
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  mem_limit: 768m
+  cpus: 1.0
+  stop_grace_period: 40s
+  healthcheck:
+    test: [CMD, curl, -fsS, http://localhost:8080/actuator/health]
+    interval: 15s
+    timeout: 5s
+    retries: 12
+    start_period: 90s
+x-env: &env
+  SPRING_PROFILES_ACTIVE: local
+  CONFIG_SERVER_URL: http://config-server:8888
+  CONFIG_USERNAME: ${CONFIG_USERNAME:?Generate .env first}
+  CONFIG_PASSWORD: ${CONFIG_PASSWORD:?Generate .env first}
+  EUREKA_URL: http://${EUREKA_USERNAME:?Set EUREKA_USERNAME in .env}:${EUREKA_PASSWORD:?Set EUREKA_PASSWORD in .env}@discovery-server:8761/eureka/
+  INTERNAL_HMAC_SECRET: ${INTERNAL_HMAC_SECRET:?Generate .env first}
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+x-mysql: &mysql
+  image: mysql:8.4
+  restart: unless-stopped
+  command: [--character-set-server=utf8mb4, --collation-server=utf8mb4_0900_bin]
+  mem_limit: 512m
+  security_opt: [no-new-privileges:true]
+  healthcheck:
+    test: [CMD-SHELL, 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u "$$MYSQL_USER" -D "$$MYSQL_DATABASE" -e "SELECT 1"']
+    interval: 10s
+    timeout: 5s
+    retries: 20
+    start_period: 60s
+services:
+  config-server:
+    <<: *app
+    build: ./infrastructure/config-server
+    environment:
+      SPRING_PROFILES_ACTIVE: local,native
+      CONFIG_USERNAME: ${CONFIG_USERNAME:?Set CONFIG_USERNAME in .env}
+      CONFIG_PASSWORD: ${CONFIG_PASSWORD:?Set CONFIG_PASSWORD in .env}
+      CONFIG_REPOSITORY: file:/config/
+    volumes: [./config-repo:/config:ro]
+    networks: [services]
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8888/actuator/health]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+  discovery-server:
+    <<: *app
+    build: ./infrastructure/discovery-server
+    environment:
+      EUREKA_USERNAME: ${EUREKA_USERNAME:?Set EUREKA_USERNAME in .env}
+      EUREKA_PASSWORD: ${EUREKA_PASSWORD:?Set EUREKA_PASSWORD in .env}
+    networks: [services]
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8761/actuator/health]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+  api-gateway:
+    <<: *app
+    build: ./services/api-gateway
+    environment:
+      <<: *env
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:?Set your Firebase project ID}
+      REDIS_HOST: edge-redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    ports: [127.0.0.1:8080:8080]
+    networks: [edge, services, edge-cache]
+    depends_on:
+      config-server: {condition: service_healthy}
+      discovery-server: {condition: service_healthy}
+      edge-redis: {condition: service_healthy}
+  user-service:
+    <<: *app
+    build: ./services/user-service
+    environment:
+      <<: *env
+      DB_URL: jdbc:mysql://user-db:3306/user?sslMode=DISABLED&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&connectTimeout=2000&socketTimeout=5000
+      DB_USERNAME: user
+      DB_PASSWORD: ${USER_DB_PASSWORD:?Set USER_DB_PASSWORD in .env}
+    networks: [services, user-data]
+    depends_on:
+      config-server: {condition: service_healthy}
+      discovery-server: {condition: service_healthy}
+      user-db: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8081/actuator/health]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+  user-db:
+    <<: *mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: user
+      MYSQL_USER: user
+      MYSQL_PASSWORD: ${USER_DB_PASSWORD:?Set USER_DB_PASSWORD in .env}
+    volumes: [user-db-data:/var/lib/mysql]
+    networks: [user-data]
+  product-service:
+    <<: *app
+    build: ./services/product-service
+    environment:
+      <<: *env
+      DB_URL: jdbc:mysql://product-db:3306/product?sslMode=DISABLED&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&connectTimeout=2000&socketTimeout=5000
+      DB_USERNAME: product
+      DB_PASSWORD: ${PRODUCT_DB_PASSWORD:?Set PRODUCT_DB_PASSWORD in .env}
+      REDIS_HOST: product-redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    networks: [services, product-data, product-cache]
+    depends_on:
+      config-server: {condition: service_healthy}
+      discovery-server: {condition: service_healthy}
+      product-db: {condition: service_healthy}
+      kafka-init: {condition: service_completed_successfully}
+      product-redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8082/actuator/health]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+  product-db:
+    <<: *mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: product
+      MYSQL_USER: product
+      MYSQL_PASSWORD: ${PRODUCT_DB_PASSWORD:?Set PRODUCT_DB_PASSWORD in .env}
+    volumes: [product-db-data:/var/lib/mysql]
+    networks: [product-data]
+  order-service:
+    <<: *app
+    build: ./services/order-service
+    environment:
+      <<: *env
+      DB_URL: jdbc:mysql://order-db:3306/order?sslMode=DISABLED&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&connectTimeout=2000&socketTimeout=5000
+      DB_USERNAME: order
+      DB_PASSWORD: ${ORDER_DB_PASSWORD:?Set ORDER_DB_PASSWORD in .env}
+    networks: [services, order-data]
+    depends_on:
+      config-server: {condition: service_healthy}
+      discovery-server: {condition: service_healthy}
+      order-db: {condition: service_healthy}
+      kafka-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8083/actuator/health]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+  order-db:
+    <<: *mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: order
+      MYSQL_USER: order
+      MYSQL_PASSWORD: ${ORDER_DB_PASSWORD:?Set ORDER_DB_PASSWORD in .env}
+    volumes: [order-db-data:/var/lib/mysql]
+    networks: [order-data]
+  payment-service:
+    <<: *app
+    build: ./services/payment-service
+    environment:
+      <<: *env
+      DB_URL: jdbc:mysql://payment-db:3306/payment?sslMode=DISABLED&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&connectTimeout=2000&socketTimeout=5000
+      DB_USERNAME: payment
+      DB_PASSWORD: ${PAYMENT_DB_PASSWORD:?Set PAYMENT_DB_PASSWORD in .env}
+      PAYMENT_PROVIDER: sandbox
+      SANDBOX_PAYMENT_DECLINE: 'false'
+    networks: [services, payment-data]
+    depends_on:
+      config-server: {condition: service_healthy}
+      discovery-server: {condition: service_healthy}
+      payment-db: {condition: service_healthy}
+      kafka-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8084/actuator/health]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+  payment-db:
+    <<: *mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: payment
+      MYSQL_USER: payment
+      MYSQL_PASSWORD: ${PAYMENT_DB_PASSWORD:?Set PAYMENT_DB_PASSWORD in .env}
+    volumes: [payment-db-data:/var/lib/mysql]
+    networks: [payment-data]
+  notification-service:
+    <<: *app
+    build: ./services/notification-service
+    environment:
+      <<: *env
+      DB_URL: jdbc:mysql://notification-db:3306/notification?sslMode=DISABLED&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&connectTimeout=2000&socketTimeout=5000
+      DB_USERNAME: notification
+      DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD:?Set NOTIFICATION_DB_PASSWORD in .env}
+    networks: [services, notification-data]
+    depends_on:
+      config-server: {condition: service_healthy}
+      discovery-server: {condition: service_healthy}
+      notification-db: {condition: service_healthy}
+      kafka-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8085/actuator/health]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+  notification-db:
+    <<: *mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: notification
+      MYSQL_USER: notification
+      MYSQL_PASSWORD: ${NOTIFICATION_DB_PASSWORD:?Set NOTIFICATION_DB_PASSWORD in .env}
+    volumes: [notification-db-data:/var/lib/mysql]
+    networks: [notification-data]
+  kafka:
+    image: apache/kafka:4.1.0
+    restart: unless-stopped
+    mem_limit: 1g
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes: [kafka-data:/var/lib/kafka/data]
+    networks: [services]
+    healthcheck:
+      test: [CMD, /opt/kafka/bin/kafka-topics.sh, --bootstrap-server, localhost:9092, --list]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 45s
+  kafka-init:
+    image: apache/kafka:4.1.0
+    networks: [services]
+    depends_on:
+      kafka: {condition: service_healthy}
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        for topic in commerce.saga.v1 commerce.saga.v1.order-service.DLT commerce.saga.v1.product-service.DLT commerce.saga.v1.payment-service.DLT commerce.saga.v1.notification-service.DLT; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic "$$topic" --partitions 12 --replication-factor 1 --config retention.ms=604800000
+        done
+  edge-redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    mem_limit: 384m
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    command: [sh, -c, 'exec redis-server --appendonly yes --appendfsync everysec --requirepass "$$REDIS_PASSWORD" --maxmemory 256mb --maxmemory-policy noeviction']
+    volumes: [edge-redis-data:/data]
+    networks: [edge-cache]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+  product-redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    mem_limit: 384m
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    command: [sh, -c, 'exec redis-server --appendonly yes --appendfsync everysec --requirepass "$$REDIS_PASSWORD" --maxmemory 256mb --maxmemory-policy noeviction']
+    volumes: [product-redis-data:/data]
+    networks: [product-cache]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+networks:
+  edge: {}
+  services: {internal: true}
+  edge-cache: {internal: true}
+  product-cache: {internal: true}
+  user-data: {internal: true}
+  product-data: {internal: true}
+  order-data: {internal: true}
+  payment-data: {internal: true}
+  notification-data: {internal: true}
+volumes:
+  user-db-data: {}
+  product-db-data: {}
+  order-db-data: {}
+  payment-db-data: {}
+  notification-db-data: {}
+  kafka-data: {}
+  edge-redis-data: {}
+  product-redis-data: {}

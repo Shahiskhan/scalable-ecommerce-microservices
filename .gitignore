@@ -1,0 +1,10 @@
+**/target/
+.env
+backend/.env
+.local/
+.m2/
+*.log
+.idea/
+.vscode/
+*.iml
+secrets/

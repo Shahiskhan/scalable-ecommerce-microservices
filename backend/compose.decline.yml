@@ -1,0 +1,4 @@
+services:
+  payment-service:
+    environment:
+      SANDBOX_PAYMENT_DECLINE: 'true'

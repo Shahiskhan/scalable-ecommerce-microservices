@@ -1,0 +1,66 @@
+server:
+  port: 8083
+spring:
+  application:
+    name: order-service
+  config:
+    import: ${CONFIG_IMPORT:configserver:${CONFIG_SERVER_URL:http://config-server:8888}}
+  cloud:
+    config:
+      username: ${CONFIG_USERNAME}
+      password: ${CONFIG_PASSWORD}
+      fail-fast: true
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 12
+      connection-timeout: 3000
+  threads:
+    virtual:
+      enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        delivery.timeout.ms: 10000
+        request.timeout.ms: 3000
+        max.block.ms: 3000
+    consumer:
+      group-id: order-service-v1
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      properties:
+        isolation.level: read_committed
+        max.poll.records: 25
+    listener:
+      ack-mode: record
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: ${EUREKA_URL}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+logging:
+  structured:
+    format:
+      console: logstash
+commerce:
+  internal-secret: ${INTERNAL_HMAC_SECRET}
+  topic: commerce.saga.v1
+  order-lifetime: PT15M

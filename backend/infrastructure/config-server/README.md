@@ -1,0 +1,3 @@
+# Config server
+
+Independent Java 25 build: `mvn verify`. Port8888. `CONFIG_USERNAME` and `CONFIG_PASSWORD` are required. Basic authentication protects configuration endpoints; health probes are anonymous. Use TLS and network restrictions in production. Native local profile reads `CONFIG_REPOSITORY` (default `file:/config/`). A production deployment uses only the `prod` profile, `CONFIG_GIT_URI`, and optional `CONFIG_GIT_LABEL` (default `main`). Git credentials should be injected through a secret manager / credential provider. Do not store secrets in the configuration repository. Do not expose this service publicly.
